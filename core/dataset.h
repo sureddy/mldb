@@ -417,6 +417,12 @@ struct Dataset: public MldbEntity {
     */
     virtual std::shared_ptr<RowValueInfo> getRowInfo() const;
 
+    /** Return a row as an expression value.  Default forwards to the matrix
+        view's getRow() function.
+    */
+    virtual ExpressionValue getRowExpr(const RowName & row) const;
+
+
     /** Commit changes to the database.  Default is a no-op.
 
         This function must be thread safe with respect to concurrent calls to
@@ -437,8 +443,7 @@ struct Dataset: public MldbEntity {
                     const SqlExpression & rowName,
                     ssize_t offset,
                     ssize_t limit,
-                    Utf8String alias = "",
-                    bool allowMT = true) const;
+                    Utf8String alias = "") const;
 
     /** Select from the database. */
     virtual std::vector<MatrixNamedRow>
@@ -520,8 +525,7 @@ struct Dataset: public MldbEntity {
                const SqlExpression & where,
                const OrderByExpression & orderBy,
                ssize_t offset,
-               ssize_t limit,
-               bool allowParallel) const;
+               ssize_t limit) const;
 
     /** Method to overwrite to handle a request.  By default, the dataset
         will return that it can't handle any requests.  Used to expose
@@ -572,7 +576,8 @@ struct Dataset: public MldbEntity {
 
     /* In the case of a dataset with rows composed from other datasets (i.e., joins)
        This will return the name that the row has in the table with this alias*/
-    virtual RowName getOriginalRowName(const Utf8String& tableName, const RowName & name) const;
+    virtual RowName getOriginalRowName(const Utf8String& tableName,
+                                       const RowName & name) const;
 };
 
 

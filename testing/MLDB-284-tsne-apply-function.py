@@ -29,7 +29,7 @@ conf = {
     "params": {
         "trainingData": "select * from toy limit 200",
         "rowOutputDataset": {"id": "toy_tsne", "type": "embedding" },
-        "modelFileUrl": "file://tmp/MLDB-1081-tsne.bin.gz",
+        "modelFileUrl": "file://tmp/MLDB-284-tsne.bin.gz",
         "functionName": "tsne_embed",
         "runOnCreation": True
     }
@@ -45,6 +45,7 @@ def runProcedure():
 
 def applyFunction(row):
     rez = mldb.perform("GET", "/v1/functions/tsne_embed/application", [['input', {'embedding':row}]])
+    mldb.log(rez)
     return rez
 
 firstRunRows = runProcedure()
