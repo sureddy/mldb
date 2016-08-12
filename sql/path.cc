@@ -11,7 +11,7 @@
 #include "mldb/types/value_description.h"
 #include "mldb/types/vector_description.h"
 #include "mldb/http/http_exception.h"
-#include "mldb/ext/siphash/csiphash.h"
+#include "mldb/ext/highwayhash.h"
 #include "mldb/types/itoa.h"
 #include "mldb/utils/json_utils.h"
 #include "mldb/ext/cityhash/src/city.h"
@@ -21,6 +21,12 @@ using namespace std;
 
 namespace Datacratic {
 namespace MLDB {
+
+namespace {
+// If ever we allow the first offset of a path to be non-zero (eg, to tail
+// a long path via sharing) we should remove this.
+constexpr bool PATH_OFFSET_ZERO_IS_ALWAYS_ZERO = true;
+} // file scope
 
 
 /*****************************************************************************/
@@ -50,7 +56,7 @@ int calcDigits(const char * begin, size_t len)
     return calcDigits(begin, begin + len);
 }
 
-std::pair<size_t, size_t>
+inline std::pair<size_t, size_t>
 countDigits(const char * p, size_t len)
 {
     // Count leading zeros
@@ -241,6 +247,15 @@ tryParsePartial(const char * & p, const char * e, bool exceptions)
                     result += '\"';
                     ++ufirst;  // skip the second quote
                 }
+                else if (c == 0) {
+                    if (exceptions) {
+                        throw HttpReturnException
+                            (400, "Paths cannot contain null characters");
+                    }
+                    else {
+                        return { PathElement(), false };
+                    }
+                }
                 else {
                     result += c;
                 }
@@ -264,7 +279,8 @@ tryParsePartial(const char * & p, const char * e, bool exceptions)
                 if (c == '\"') {
                     if (exceptions) {
                         throw HttpReturnException
-                            (400, "invalid char in PathElement '" + Utf8String(start, e)
+                            (400, "invalid char in PathElement '"
+                             + Utf8String(p, e)
                              + "'.  Quotes must be doubled.");
                     }
                     else {
@@ -274,8 +290,10 @@ tryParsePartial(const char * & p, const char * e, bool exceptions)
                 else {
                     if (exceptions) {
                         throw HttpReturnException
-                            (400, "invalid char in PathElement '" + Utf8String(start, e)
-                             + "'.  Special characters must be quoted.");
+                            (400, "invalid char in PathElement '"
+                             + Utf8String(p, e)
+                             + "'.  Special characters must be quoted and "
+                             "nulls are not accepted.");
                     }
                     else {
                         return { PathElement(), false };
@@ -403,6 +421,24 @@ operator <  (const PathElement & other) const
 
 bool
 PathElement::
+operator <= (const PathElement & other) const
+{
+    //ExcAssertEqual(digits_, calcDigits(data(), dataLength()));
+    //ExcAssertEqual(other.digits_, calcDigits(other.data(), other.dataLength()));
+
+    if (digits_ == NO_DIGITS && other.digits_ == NO_DIGITS) {
+        size_t l1 = dataLength();
+        size_t l2 = other.dataLength();
+        int res = std::memcmp(data(), other.data(), std::min(l1, l2));
+        if (res) return res <= 0;
+        return l1 <= l2;
+    }
+
+    return compareString(other.data(), other.dataLength()) <= 0;
+}
+
+bool
+PathElement::
 startsWith(const std::string & other) const
 {
     return toUtf8String().startsWith(other);
@@ -447,17 +483,45 @@ toEscapedUtf8String() const
 
     const char * d = data();
     size_t l = dataLength();
+    const char * e = d + l;
 
-    auto isSimpleChar = [] (int c) -> bool
+    auto isSimpleChar = [] (unsigned char c) -> bool
         {
-            return c != '\"' && c != '.';
+            return c >= ' ' && c != '\"' && c != '.';
         };
 
     bool isSimple = l == 0 || isSimpleChar(d[0]);
+    bool isUtf8 = false;
     for (size_t i = 0;  i < l && isSimple;  ++i) {
+        if (d[i] & 128) {
+            // high bit set; is UTF-8
+            isUtf8 = true;
+            break;
+        }
         if (!isSimpleChar(d[i]) && d[i] != '_')
             isSimple = false;
     }
+
+    if (isUtf8) {
+        auto isSimpleUtf8 = [] (uint32_t c) -> bool
+            {
+                return c >= ' ' && c != '\"' && c != '.';
+            };
+
+        // Simple character detection doesn't work with UTF-8
+        // Scan it UTF-8 character by UTF-8 character
+        isSimple = true;
+        utf8::iterator<const char *> ufirst(d, d, e);
+        utf8::iterator<const char *> ulast(e, d, e);
+
+        while (isSimple && ufirst != ulast) {
+            auto c = *ufirst++;
+            if (!isSimpleUtf8(c)) {
+                isSimple = false;
+            }
+        }
+    }
+
     if (isSimple)
         return toUtf8String();
     else {
@@ -492,7 +556,9 @@ toIndex() const
     const char * p = data();
     const char * e = p + dataLength();
     if (e == p)
-        return false;
+        return -1;
+    if (*p == '0' && dataLength() != 1)
+        return -1;
     for (; p != e;  ++p) {
         if (!isdigit(*p))
             return -1;
@@ -528,23 +594,23 @@ uint64_t
 PathElement::
 newHash() const
 {
-    return ::mldb_siphash24(data(), dataLength(), defaultSeedStable.b);
+    return highwayHash(defaultSeedStable.u64, data(), dataLength());
 }
 
 Path
 PathElement::
 operator + (const PathElement & other) const
 {
-    Path result(*this);
-    return result + other;
+    PathBuilder builder;
+    return builder.add(*this).add(other).extract();
 }
 
 Path
 PathElement::
 operator + (PathElement && other) const
 {
-    Path result(*this);
-    return result + std::move(other);
+    PathBuilder builder;
+    return builder.add(*this).add(std::move(other)).extract();
 }
 
 Path
@@ -782,7 +848,7 @@ PathBuilder &
 PathBuilder::
 add(PathElement && element)
 {
-    if (bytes.empty()) {
+    if (bytes.empty() && element.hasExternalStorage()) {
         bytes = element.stealBytes();
     }
     else {
@@ -808,6 +874,19 @@ add(const PathElement & element)
     if (indexes.size() <= 16) {
         //ExcAssertEqual(calcDigits(v.first, v.first + v.second), element.digits_);
         digits_ = digits_ | ((int)element.digits_ << (2 * (indexes.size() - 1)));
+    }
+    indexes.emplace_back(bytes.size());
+    
+    return *this;
+}
+
+PathBuilder &
+PathBuilder::
+add(const char * utf8Str, size_t charLength)
+{
+    bytes.append(utf8Str, utf8Str + charLength);
+    if (indexes.size() <= 16) {
+        digits_ = digits_ | (calcDigits(utf8Str, charLength) << (2 * (indexes.size() - 1)));
     }
     indexes.emplace_back(bytes.size());
     
@@ -864,7 +943,13 @@ Path::Path(PathElement && path)
         length_ = 0;
         return;
     }
-    bytes_ = path.stealBytes();
+    if (path.hasExternalStorage()) {
+        bytes_ = path.stealBytes();
+    }
+    else {
+        auto v = path.getStringView();
+        bytes_.append(v.first, v.first + v.second);
+    }
     if (externalOfs()) {
         ofsPtr_ = new uint32_t[2];
         ofsPtr_[0] = 0;
@@ -884,7 +969,13 @@ Path::Path(const PathElement & path)
         length_ = 0;
         return;
     }
-    bytes_ = path.getBytes();
+    if (path.hasExternalStorage()) {
+        bytes_ = path.getBytes();
+    }
+    else {
+        auto v = path.getStringView();
+        bytes_.append(v.first, v.first + v.second);
+    }
     if (externalOfs()) {
         ofsPtr_ = new uint32_t[2];
         ofsPtr_[0] = 0;
@@ -923,6 +1014,25 @@ toUtf8String() const
         result += at(i).toEscapedUtf8String(); 
         first = false;
     }
+    return result;
+}
+
+ssize_t
+Path::
+toIndex() const
+{
+    if (length_ != 1 || digits(0) != PathElement::DIGITS_ONLY)
+        return -1;
+    return at(0).toIndex();
+}
+
+size_t
+Path::
+requireIndex() const
+{
+    ssize_t result = toIndex();
+    if (result == -1)
+        throw HttpReturnException(400, "Path was not an index");
     return result;
 }
 
@@ -1255,11 +1365,25 @@ compareElement(size_t el, const Path & other, size_t otherEl) const
     int d0 = digits(el);
     int d1 = other.digits(otherEl);
 
-    if (d0 == PathElement::NO_DIGITS && d1 == PathElement::NO_DIGITS) {
-        int res = std::memcmp(s0, s1, std::min(l0, l1));
-        if (res)
+    if (JML_LIKELY(d0 == d1)) {
+        if (d0 == PathElement::NO_DIGITS) {
+            int res = std::memcmp(s0, s1, std::min(l0, l1));
+            if (res == 0)
+                res = l0 - l1;
             return res;
-        return l0 - l1;
+        }
+        else if (d0 == PathElement::DIGITS_ONLY
+                 && JML_LIKELY(s0[0] != '0' && s1[0] != '0')) {
+            int res = 0;
+            if (l0 != l1)
+                res = l0 - l1;
+            else {
+                res = std::memcmp(s0, s1, l0);
+                if (res == 0)
+                    res = l0 - l1;
+            }
+            return res;
+        }
     }
 
     return compareNatural(s0, l0, s1, l1);
@@ -1285,11 +1409,12 @@ operator == (const Path & other) const
     if (length_ != other.length_) {
         return false;
     }
-    //if (digits_ != other.digits_)
-    //    return false;
+    if (digits_ != other.digits_)
+        return false;
 
-    // Short circuit
-    if (offset(0) == 0 && other.offset(0) == 0) {
+    // Short circuit (currently offset(0) is always 0, so always taken.
+    if (PATH_OFFSET_ZERO_IS_ALWAYS_ZERO
+        || (offset(0) == 0 && other.offset(0) == 0)) {
         for (size_t i = 1;  i <= length_;  ++i) {
             if (offset(i) != other.offset(i)) {
                 return false;
@@ -1297,9 +1422,10 @@ operator == (const Path & other) const
         }
         if (bytes_.size() != other.bytes_.size())
             return false;
-        return std::memcmp(bytes_.data(), other.bytes_.data(), bytes_.size()) == 0;
+        return std::memcmp(bytes_.data(), other.bytes_.data(), bytes_.size())
+            == 0;
     }
-
+    
     return compare(other) == 0;
 }
 

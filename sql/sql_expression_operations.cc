@@ -10,6 +10,7 @@
 #include <boost/algorithm/string.hpp>
 #include "mldb/types/structure_description.h"
 #include "mldb/types/vector_description.h"
+#include "mldb/types/compact_vector_description.h"
 #include "table_expression_operations.h"
 #include <unordered_set>
 #include "mldb/server/dataset_context.h"
@@ -63,8 +64,8 @@ doComparison(const SqlExpression * expr,
             -> const ExpressionValue &
             {
                 ExpressionValue lstorage, rstorage;
-                const ExpressionValue & l = boundLhs(row, lstorage, filter);
-                const ExpressionValue & r = boundRhs(row, rstorage, filter);
+                const ExpressionValue & l = boundLhs(row, lstorage, GET_LATEST);
+                const ExpressionValue & r = boundRhs(row, rstorage, GET_LATEST);
                 // cerr << "left " << l << " " << "right " << r << endl;
                 Date ts = calcTs(l, r);
                 if (l.empty() || r.empty())
@@ -1170,8 +1171,9 @@ static CellValue binaryModulus(const CellValue & la, const CellValue & ra)
 struct BinaryPlusOp {
     static CellValue apply(const CellValue & l, const CellValue & r)
     {
-        if (l.empty() || r.empty())
-            return l;
+        if (l.empty() || r.empty()) {
+            return CellValue();
+        }
         return binaryPlus(l, r);
     }
 
@@ -1186,8 +1188,9 @@ struct BinaryPlusOp {
 struct BinaryMinusOp {
     static CellValue apply(const CellValue & l, const CellValue & r)
     {
-        if (l.empty() || r.empty())
-            return l;
+        if (l.empty() || r.empty()) {
+            return CellValue();
+        }
         return binaryMinus(l, r);
     }
 
@@ -1202,8 +1205,9 @@ struct BinaryMinusOp {
 struct BinaryMultiplicationOp {
     static CellValue apply(const CellValue & l, const CellValue & r)
     {
-        if (l.empty() || r.empty())
-            return l;
+        if (l.empty() || r.empty()) {
+            return CellValue();
+        }
         return binaryMultiplication(l, r);
     }
 
@@ -1218,8 +1222,9 @@ struct BinaryMultiplicationOp {
 struct BinaryDivisionOp {
     static CellValue apply(const CellValue & l, const CellValue & r)
     {
-        if (l.empty() || r.empty())
-            return l;
+        if (l.empty() || r.empty()) {
+            return CellValue();
+        }
         return binaryDivision(l, r);
     }
 
@@ -1234,8 +1239,9 @@ struct BinaryDivisionOp {
 struct BinaryModulusOp {
     static CellValue apply(const CellValue & l, const CellValue & r)
     {
-        if (l.empty() || r.empty())
-            return l;
+        if (l.empty() || r.empty()) {
+            return CellValue();
+        }
         return binaryModulus(l, r);
     }
 
@@ -1712,6 +1718,12 @@ getChildren() const
     return result;
 }
 
+bool
+SelectWithinExpression::
+isConstant() const
+{
+    return select->isConstant();
+}
 
 /*****************************************************************************/
 /* EMBEDDING EXPRESSION                                                      */
@@ -1747,7 +1759,7 @@ bind(SqlBindingScope & scope) const
     }
 
     vector<BoundSqlExpression> boundClauses;
-    vector<size_t> knownDims = {clauses.size()};
+    DimsVector knownDims = {clauses.size()};
 
     std::vector<std::shared_ptr<ExpressionValueInfo> > clauseInfo;
 
@@ -1769,15 +1781,18 @@ bind(SqlBindingScope & scope) const
                      const VariableFilter & filter) -> const ExpressionValue &
         {  
             Date ts = Date::negativeInfinity();
-            std::vector<CellValue> cells;
 
             if (lastLevel) {
-                cells.reserve(boundClauses.size());
+                std::vector<CellValue> cells(boundClauses.size());
 
-                for (auto & c: boundClauses) {
-                    ExpressionValue v = c(scope, filter);
+                for (size_t i = 0;  i < boundClauses.size();  ++i) {
+                    auto & c = boundClauses[i];
+                    ExpressionValue storage2;
+                    const ExpressionValue & v = c(scope, storage2, filter);
                     ts.setMax(v.getEffectiveTimestamp());
-                    cells.emplace_back(v.stealAtom());
+                    if (&v == &storage2)
+                        cells[i] = storage2.stealAtom();
+                    else cells[i] = v.getAtom();
                 }
 
                 ExpressionValue result(std::move(cells), ts);
@@ -1785,7 +1800,9 @@ bind(SqlBindingScope & scope) const
             }
             else {
 
-                std::vector<size_t> dims = { boundClauses.size() };
+                std::vector<CellValue> cells;
+
+                DimsVector dims { boundClauses.size() };
 
                 for (unsigned i = 0;  i < boundClauses.size();  ++i) {
                     auto & c = boundClauses[i];
@@ -2202,7 +2219,7 @@ bind(SqlBindingScope & scope) const
     BoundFunction fn = scope.doGetFunction(tableName, functionName,
                                            boundArgs, scope);
     
-    if (!fn) {
+    if (!fn && !fn.bindFunction) {
         Utf8String message = "Unable to find function '" + functionName + "'";
         if (!tableName.empty())
             message += " in dataset '" + tableName + "'";
@@ -2219,6 +2236,9 @@ bind(SqlBindingScope & scope) const
                                   "surface", surface);
     }
 
+    if (fn.bindFunction) {
+        return fn.bindFunction(scope, boundArgs, this);
+    }
     return bindBuiltinFunction(scope, boundArgs, fn);
 }
 
@@ -2228,34 +2248,34 @@ bindBuiltinFunction(SqlBindingScope & scope,
                     std::vector<BoundSqlExpression>& boundArgs,
                     BoundFunction& fn) const
 {
-    bool isAggregate = tryLookupAggregator(functionName) != nullptr;	
+    bool isAggregate = tryLookupAggregator(functionName) != nullptr;
 
     if (isAggregate) {
-        return {[=] (const SqlRowScope & row,		
+        return {[=] (const SqlRowScope & row,
                      ExpressionValue & storage,
-                     const VariableFilter & filter) -> const ExpressionValue &		
-                {		
-                    std::vector<ExpressionValue> evaluatedArgs;		
+                     const VariableFilter & filter) -> const ExpressionValue &
+                {
+                    std::vector<ExpressionValue> evaluatedArgs;
                     // ??? BAD SMELL
-                    //Don't evaluate the args for aggregator		
-                    evaluatedArgs.resize(boundArgs.size());		
-                    return storage = std::move(fn(evaluatedArgs, row));		
-                },		
-                this,		
-                fn.resultInfo};		
-    }		
-    else {		
-        return {[=] (const SqlRowScope & row,		
+                    //Don't evaluate the args for aggregator
+                    evaluatedArgs.resize(boundArgs.size());
+                    return storage = std::move(fn(evaluatedArgs, row));
+                },
+                this,
+                fn.resultInfo};
+    }
+    else {
+        return {[=] (const SqlRowScope & row,
                      ExpressionValue & storage,
-                     const VariableFilter & filter) -> const ExpressionValue &		
+                     const VariableFilter & filter) -> const ExpressionValue &
                 {
                     std::vector<ExpressionValue> evaluatedArgs;
                     evaluatedArgs.reserve(boundArgs.size());
-                    for (auto & a: boundArgs)		
+                    for (auto & a: boundArgs)
                         evaluatedArgs.emplace_back(std::move(a(row, fn.filter)));
-                    
-                    return storage = std::move(fn(evaluatedArgs, row));		
-                },		         
+
+                    return storage = std::move(fn(evaluatedArgs, row));
+                },
                 this,
                 fn.resultInfo};
     }
@@ -2265,8 +2285,8 @@ Utf8String
 FunctionCallExpression::
 print() const
 {
-    Utf8String result = "function(" + jsonEncodeStr(tableName)
-        + "," + jsonEncodeStr(functionName);
+    Utf8String result = "function(" + jsonEncodeUtf8(tableName)
+        + "," + jsonEncodeUtf8(functionName);
         
     for (auto & a : args) {
         result += "," + a->print();
@@ -2507,7 +2527,7 @@ bind(SqlBindingScope & scope) const
                 {
                     ExpressionValue vstorage;
                     const ExpressionValue & v = boundExpr(row, vstorage, filter);
-                    
+
                     if (!v.empty()) {
                         for (auto & w: boundWhen) {
                             ExpressionValue wstorage;
@@ -2519,9 +2539,18 @@ bind(SqlBindingScope & scope) const
                         }
                     }
 
-                    if (elseExpr)
+                    if (elseExpr) {
                         return boundElse(row, storage, filter);
-                    else return storage = std::move(ExpressionValue());
+                    }
+
+                    if (boundWhen.size() > 0 && boundWhen[0].second.info->isRow()) {
+                        // No else defined, first when returned a row,
+                        // return an empty row as default else
+                        return storage = std::move(ExpressionValue(RowValue()));
+                    }
+
+                    // default else returns an empty value
+                    return storage = std::move(ExpressionValue());
                 },
                 this,
                 // TODO: infer the type
@@ -3096,6 +3125,10 @@ bind(SqlBindingScope & scope) const
 
             const ExpressionValue & value = boundLeft(rowScope, vstorage, filter);
 
+            if (value.empty()) {
+                return storage =
+                    std::move(ExpressionValue::null(Date::negativeInfinity()));
+            }
             if (!value.isString())
                 throw HttpReturnException(400, "LIKE expression expected its left "
                         "hand value to be a string, got " + value.getTypeAsString());
@@ -3428,53 +3461,63 @@ bind(SqlBindingScope & scope) const
     //cerr << "prefix = " << prefix << endl;
     //cerr << "asPrefix = " << asPrefix << endl;
 
-    if (!prefix.empty())
-        simplifiedPrefix = scope.doResolveTableName(prefix, resolvedTableName);
+    ColumnFilter newColumnName;
 
-    //cerr << "tableName = " << resolvedTableName << endl;
-    //cerr << "simplifiedPrefix = " << simplifiedPrefix << endl;
+    if (!prefix.empty() || !excluding.empty() || !asPrefix.empty()){
+       
+        if (!prefix.empty())
+            simplifiedPrefix = scope.doResolveTableName(prefix, resolvedTableName);
 
-    // This function figures out the new name of the column.  If it's excluded,
-    // then it returns the empty column name
-    auto newColumnName = [=] (const ColumnName & inputColumnName) -> ColumnName
-        {
-            //cerr << "input column name " << inputColumnName << endl;
+        //cerr << "tableName = " << resolvedTableName << endl;
+        //cerr << "simplifiedPrefix = " << simplifiedPrefix << endl;
 
-            // First, check it matches the prefix
-            if (!inputColumnName.matchWildcard(simplifiedPrefix)) {
-                //cerr << "rejected by prefix" << endl;
-                return ColumnName();
-            }
+        // This function figures out the new name of the column.  If it's excluded,
+        // then it returns the empty column name
+        newColumnName = ColumnFilter([=] (const ColumnName & inputColumnName) -> ColumnName
+            {
+                //cerr << "input column name " << inputColumnName << endl;
 
-            // Second, check it doesn't match an exclusion
-            for (auto & ex: excluding) {
-                if (ex.second) {
-                    // prefix
-                    if (inputColumnName.matchWildcard(ex.first))
-                        return ColumnName();
+                // First, check it matches the prefix
+                // We have to check the simplified prefix for regular datasets
+                // i.e select x.a.* from x returns a.b
+                // But we have to check the initial prefix for joins
+                // i.e select x.a.* from x join y returns x.a.b
+                if (!inputColumnName.matchWildcard(simplifiedPrefix)
+                    && !inputColumnName.matchWildcard(prefix)) {
+                    //cerr << "rejected by prefix: " << simplifiedPrefix << "," << prefix << endl;
+                    return ColumnName();
                 }
-                else {
-                    // exact match
-                    if (inputColumnName == ex.first)
-                        return ColumnName();
+
+                // Second, check it doesn't match an exclusion
+                for (auto & ex: excluding) {
+                    if (ex.second) {
+                        // prefix
+                        if (inputColumnName.matchWildcard(ex.first))
+                            return ColumnName();
+                    }
+                    else {
+                        // exact match
+                        if (inputColumnName == ex.first)
+                            return ColumnName();
+                    }
                 }
-            }
 
-            // Finally, replace the prefix with the new prefix
-            if (!simplifiedPrefix.empty() || (prefix != asPrefix)) {
+                // Finally, replace the prefix with the new prefix
+                if (!simplifiedPrefix.empty() || (prefix != asPrefix)) {
 
-                if (prefix != asPrefix) {
-                    //cerr << "replacing wildcard " << prefix
-                    // << " with " << asPrefix << " on " << inputColumnName << endl;
-                    //cerr << "result: " << inputColumnName.replaceWildcard(prefix, asPrefix) << endl;
+                    if (prefix != asPrefix) {
+                        //cerr << "replacing wildcard " << prefix
+                        // << " with " << asPrefix << " on " << inputColumnName << endl;
+                        //cerr << "result: " << inputColumnName.replaceWildcard(prefix, asPrefix) << endl;
 
-                    return inputColumnName.replaceWildcard(prefix, asPrefix);
+                        return inputColumnName.replaceWildcard(prefix, asPrefix);
+                    }
                 }
-            }
 
-            //cerr << "kept" << endl;
-            return inputColumnName;
-        };
+                //cerr << "kept" << endl;
+                return inputColumnName;
+            });
+    }   
 
     auto allColumns = scope.doGetAllColumns(resolvedTableName, newColumnName);
 
@@ -3640,7 +3683,8 @@ bind(SqlBindingScope & scope) const
         std::vector<KnownColumn> knownColumns = {
             KnownColumn(alias, exprBound.info, COLUMN_IS_DENSE) };
         
-        auto info = std::make_shared<RowValueInfo>(knownColumns, SCHEMA_CLOSED);
+        auto info = std::make_shared<RowValueInfo>
+            (knownColumns, SCHEMA_CLOSED);
 
         return BoundSqlExpression(exec, this, info);
     }
@@ -3694,9 +3738,13 @@ SelectColumnExpression::
 bind(SqlBindingScope & scope) const
 {
     // 1.  Get all columns
+    ColumnFilter filter;
     auto allColumns
         = scope.doGetAllColumns("" /* table name */,
-                                  [] (ColumnName n) { return std::move(n); });
+                                filter);
+    
+    bool hasDynamicColumns
+        = allColumns.info->getSchemaCompletenessRecursive() == SCHEMA_OPEN;
     
     // Only known columns are kept.  For each one, we filter it then calculate
     // the order by expression.
@@ -3741,7 +3789,7 @@ bind(SqlBindingScope & scope) const
         if (!keep)
             continue;
 
-        Utf8String newColName = boundAs(thisScope, GET_LATEST).toUtf8String();
+        ColumnName newColName = boundAs(thisScope, GET_LATEST).coerceToPath();
 
         vector<ExpressionValue> orderBy;
         for (auto & c: boundOrderBy) {
@@ -3791,6 +3839,14 @@ bind(SqlBindingScope & scope) const
 
     std::sort(columns.begin(), columns.end(), compareColumns);
 
+    bool selectValue
+        = select->getType() == "function"
+        && select->getOperation() == "value";
+
+    bool asColumnPath
+        = as->getType() == "function"
+        && as->getOperation() == "columnPath";
+
     //for (unsigned i = 0;  i < 10 && i < columns.size();  ++i) {
     //    cerr << "column " << i << " name " << columns[i].columnName
     //         << " sort " << jsonEncodeStr(columns[i].sortFields) << endl;
@@ -3819,30 +3875,132 @@ bind(SqlBindingScope & scope) const
         keepColumns[c.inputColumnName]
             = c.columnName;
     
-    auto filterColumns = [=] (const ColumnName & name) -> ColumnName
-        {
-            auto it = keepColumns.find(name);
-            if (it == keepColumns.end())
-                return ColumnName();
+    if (selectValue && asColumnPath && !hasDynamicColumns) {
 
-            return it->second;
-        };
+        ColumnFilter filterColumns([=] (const ColumnName & name) -> ColumnName
+            {
+                auto it = keepColumns.find(name);
+                if (it == keepColumns.end()) {
+                    return ColumnName();
+                }
+                return it->second;
+            });
     
-    // Finally, return a filtered set from the underlying dataset
-    auto outputColumns
-        = scope.doGetAllColumns("" /* prefix */, filterColumns);
+        // Finally, return a filtered set from the underlying dataset
+        auto outputColumns
+            = scope.doGetAllColumns("" /* prefix */, filterColumns);
 
-    auto exec = [=] (const SqlRowScope & scope,
-                     ExpressionValue & storage,
-                     const VariableFilter & filter)
-        -> const ExpressionValue &
-        {
-            return storage = std::move(outputColumns.exec(scope, filter));
-        };
+        auto exec = [=] (const SqlRowScope & scope,
+                         ExpressionValue & storage,
+                         const VariableFilter & filter)
+            -> const ExpressionValue &
+            {
+                return storage = std::move(outputColumns.exec(scope, filter));
+            };
 
-    BoundSqlExpression result(exec, this, outputColumns.info);
+        BoundSqlExpression result(exec, this, outputColumns.info);
     
-    return result;
+        return result;
+    }
+    else {
+        ColumnFilter filterColumns;
+
+        auto outputColumns
+            = scope.doGetAllColumns("" /* prefix */, filterColumns);
+
+        BoundSqlExpression boundSelect = select->bind(colScope);
+
+        auto exec = [=] (const SqlRowScope & scope,
+                         ExpressionValue & storage,
+                         const VariableFilter & filter)
+            -> const ExpressionValue &
+            {
+                ExpressionValue input = outputColumns.exec(scope, filter);
+
+                RowValue output;
+                
+                auto onAtom = [&] (ColumnName & columnName,
+                                   CellValue & val,
+                                   Date ts)
+                {
+                    ExpressionValue in(std::move(val), ts);
+                    auto scope = ColumnExpressionBindingScope
+                        ::getColumnScope(columnName, in);
+
+                    bool keep = boundWhere(scope, GET_LATEST).isTrue();
+
+                    if (!keep)
+                        return true;
+
+                    ExpressionValue storage;
+                    if (selectValue)
+                        storage = std::move(in);
+                    const ExpressionValue & result
+                        = selectValue
+                            ? storage
+                            : boundSelect(scope, storage, GET_ALL);
+
+                    ColumnName columnNameStorage;
+                    ColumnName * columnNameOut = &columnName;
+                    if (!asColumnPath) {
+                        ExpressionValue tmp;
+                        columnNameStorage
+                            = boundAs(scope, tmp, GET_ALL).coerceToPath();
+                        columnNameOut = &columnNameStorage;
+                    }
+                    
+                    if (&result == &storage) {
+                        if (storage.isAtom()) {
+                            // Put directly in place
+                            output.emplace_back(std::move(*columnNameOut),
+                                                storage.stealAtom(),
+                                                storage.getEffectiveTimestamp());
+                        }
+                        else {
+                            // The expression may produce more than one atom as an
+                            // output, so take all of them.
+                            auto onAtom2 = [&] (ColumnName & columnName2,
+                                                CellValue & val,
+                                                Date ts)
+                            {
+                                output.emplace_back(columnName + columnName2,
+                                                    std::move(val),
+                                                    ts);
+                                return true;
+                            };
+
+                            storage.forEachAtomDestructive(onAtom2);
+                        }
+                    }
+                    else {
+
+                        auto onAtom2 = [&] (const ColumnName & prefix,
+                                            const ColumnName & suffix,
+                                            const CellValue & val,
+                                            Date ts)
+                            {
+                                output.emplace_back((*columnNameOut)
+                                                    + prefix + suffix,
+                                                    std::move(val),
+                                                    ts);
+                                return true;
+                            };
+                        
+                        result.forEachAtom(onAtom2);
+                    }
+
+                    return true;
+                };
+                
+                input.forEachAtomDestructive(onAtom);
+
+                return storage = std::move(output);
+            };
+
+        BoundSqlExpression result(exec, this, outputColumns.info);
+    
+        return result;
+    }
 }
 
 Utf8String

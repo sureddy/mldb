@@ -33,7 +33,9 @@ RankingTypeDescription::
 RankingTypeDescription()
 {
     //addValue("percentile", PERCENTILE);
-    addValue("index", INDEX);
+    addValue("index", INDEX, 
+             "Gives an integer index ranging from 0 to n - 1, where "
+             "n is the number of rows.");
 }
 
 RankingProcedureConfig::
@@ -53,14 +55,14 @@ RankingProcedureConfigDescription()
              "expression is required but has no effect. The order by "
              "expression is used to rank the rows.");
     addField("outputDataset", &RankingProcedureConfig::outputDataset,
-             "Output dataset configuration. This may refer either to an "
-             "existing dataset, or a fully specified but non-existing dataset "
-             "which will be created by the procedure.",
+             GENERIC_OUTPUT_DS_DESC,
              PolyConfigT<Dataset>().withType("sparse.mutable"));
     addField("rankingType", &RankingProcedureConfig::rankingType,
-             "The type of the rank to output.");
+             "The type of the rank to output. The only accepted value is "
+             "`index`. It generates an integer based rank ranging from 0 to "
+             "n - 1.", INDEX);
     addField("rankingColumnName", &RankingProcedureConfig::rankingColumnName,
-             "The name to give the ranking column.");
+             "The name to give to the ranking column.", string("rank"));
     addParent<ProcedureConfig>();
     onPostValidate = validateQuery(&RankingProcedureConfig::inputData,
                                    MustContainFrom());

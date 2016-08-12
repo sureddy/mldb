@@ -12,7 +12,6 @@
 #include "mldb/rest/rest_entity.h"
 #include "mldb/sql/sql_expression.h"
 #include "mldb/sql/sql_expression_operations.h"
-#include "mldb/utils/log.h"
 #include <set>
 #include <iostream>
 #include <typeinfo>
@@ -34,6 +33,10 @@ struct Procedure;
 
 typedef EntityType<Procedure> ProcedureType;
 
+constexpr char GENERIC_OUTPUT_DS_DESC[] =
+    "Output dataset configuration. This may refer either to an "
+    "existing dataset, or a fully specified but non-existing dataset "
+    "which will be created by the procedure.";
 
 /*****************************************************************************/
 /* PROCEDURE TRAINING                                                        */

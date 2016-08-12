@@ -281,6 +281,41 @@ struct JsonParam {
     Utf8String description;
 };
 
+/** This indicates that we get a parameter from the JSON payload.
+    If name is empty, then we get the whole payload.  Otherwise we
+    get the named value of the payload.
+*/
+template<typename T, typename Codec = JsonStrCodec<T> >
+struct JsonParamDefault {
+    JsonParamDefault()
+    {
+    }
+
+    JsonParamDefault(const Utf8String & name,
+                     const Utf8String & description,
+                     T defaultValue = T(),
+                     const Utf8String & defaultValueStr = "",
+                     Codec codec = Codec())
+        : name(name), description(description), defaultValue(defaultValue),
+          defaultValueStr(codec.encode(defaultValue)),
+          codec(std::move(codec))
+    {
+    }
+    
+    JsonParamDefault(const JsonParamDefault & other)
+        : name(other.name), description(other.description),
+          defaultValue(other.defaultValue),
+          defaultValueStr(other.defaultValueStr), codec(other.codec)
+    {
+    }
+    
+    Utf8String name;
+    Utf8String description;
+    T defaultValue;
+    Utf8String defaultValueStr;
+    Codec codec;
+};
+
 
 /** This indicates that we get a parameter from the path of the request. 
     For example, GET /v1/object/3/value, this would be able to bind "3" to
@@ -308,6 +343,80 @@ struct RequestParam {
     Utf8String name;
     Utf8String description;
 };
+
+/** This indicates that we get a parameter from either the query string (json)
+    or the JSON payload. If the query string and the payload are used
+    simultaneously an error is returned.
+*/
+template<typename T, typename Codec = JsonStrCodec<T> >
+struct HybridParamJsonDefault {
+    HybridParamJsonDefault()
+    {
+    }
+
+    HybridParamJsonDefault(const Utf8String & name,
+                           const Utf8String & description,
+                           T defaultValue = T(),
+                           const Utf8String & defaultValueStr = "",
+                           Codec codec = Codec())
+        : name(name), description(description), defaultValue(defaultValue),
+          defaultValueStr(codec.encode(defaultValue)), codec(std::move(codec))
+    {
+    }
+
+    HybridParamJsonDefault(const HybridParamJsonDefault & other)
+        : name(other.name), description(other.description),
+          defaultValue(other.defaultValue),
+          defaultValueStr(other.defaultValueStr), codec(other.codec)
+    {
+    }
+
+    Utf8String name;
+    Utf8String description;
+    T defaultValue;
+    Utf8String defaultValueStr;
+    Codec codec;
+};
+
+/** This indicates that we get a parameter from either the query string
+    (non json) or the JSON payload. If the query string and the payload are
+    used simultaneously an error is returned.
+*/
+template<typename T, typename RestCodec = RestCodec<T>, typename JsonCodec = JsonStrCodec<T>>
+struct HybridParamDefault {
+    HybridParamDefault()
+    {
+    }
+
+    HybridParamDefault(const Utf8String & name,
+                       const Utf8String & description,
+                       T defaultValue = T(),
+                       const Utf8String & defaultValueStr = "",
+                       RestCodec restCodec = RestCodec(),
+                       JsonCodec jsonCodec = JsonCodec())
+        : name(name), description(description), defaultValue(defaultValue),
+          defaultValueStr(restCodec.encode(defaultValue)),
+          restCodec(std::move(restCodec)), jsonCodec(std::move(jsonCodec))
+    {
+    }
+
+    HybridParamDefault(const HybridParamDefault & other)
+        : name(other.name), description(other.description),
+          defaultValue(other.defaultValue),
+          defaultValueStr(other.defaultValueStr), restCodec(other.restCodec),
+          jsonCodec(other.jsonCodec)
+    {
+    }
+
+    Utf8String name;
+    Utf8String description;
+    T defaultValue;
+    Utf8String defaultValueStr;
+    RestCodec restCodec;
+    JsonCodec jsonCodec;
+};
+
+
 
 /** Free function to take the payload and pass it as a string. */
 struct StringPayload {

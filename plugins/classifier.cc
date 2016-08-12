@@ -26,6 +26,7 @@
 #include "mldb/ml/value_descriptions.h"
 #include "mldb/plugins/sql_config_validator.h"
 #include "mldb/plugins/sql_expression_extractors.h"
+#include "mldb/types/tuple_description.h"
 #include "mldb/vfs/fs_utils.h"
 #include "mldb/vfs/filter_streams.h"
 #include "mldb/ml/jml/training_data.h"
@@ -38,10 +39,10 @@
 #include "mldb/server/per_thread_accumulator.h"
 #include "mldb/server/parallel_merge_sort.h"
 #include "mldb/ml/jml/feature_info.h"
-#include "ml/value_descriptions.h"
 #include "mldb/types/any_impl.h"
 #include "mldb/rest/in_process_rest_connection.h"
 #include "mldb/server/static_content_macro.h"
+#include "mldb/utils/log.h"
 
 
 using namespace std;
@@ -80,7 +81,7 @@ ClassifierConfigDescription()
              "must match that of the classifier mode. Rows with null labels will be ignored. \n"
              "     * `boolean` mode: a boolean (0 or 1)\n"
              "     * `regression` mode: a real number\n"
-             "     * `categorical` mode: any combination of numbers and strings for\n\n"
+             "     * `categorical` mode: any combination of numbers and strings\n\n"
              "The select expression can contain an optional `weight` column. The weight "
              "allows the relative importance of examples to be set. It must "
              "be a real number. If the `weight` is not specified each row will have "
@@ -184,7 +185,8 @@ run(const ProcedureRunConfig & run,
 
     // try to create output folder and write open a writer to make sure 
     // we have permissions before we do the actual training
-    checkWritability(runProcConf.modelFileUrl.toString(), "modelFileUrl");
+    checkWritability(runProcConf.modelFileUrl.toDecodedString(),
+                     "modelFileUrl");
 
     // 1.  Get the input dataset
     SqlExpressionMldbScope context(server);
@@ -404,7 +406,17 @@ run(const ProcedureRunConfig & run,
 
             unordered_set<Path> unique_known_features;
             for (auto & c: row.columns) {
-                featureSpace->encodeFeature(std::get<0>(c), std::get<1>(c), features);
+                try {
+                    featureSpace->encodeFeature(std::get<0>(c), std::get<1>(c), features);
+                } JML_CATCH_ALL {
+                    rethrowHttpException
+                        (KEEP_HTTP_CODE,
+                         "Error processing row '" + row.rowName.toUtf8String()
+                         + "' column '" + std::get<0>(c).toUtf8String()
+                         + "': " + ML::getExceptionString(),
+                         "rowName", row.rowName,
+                         "columns", row.columns);
+                }
 
                 if (unique_known_features.count(std::get<0>(c)) != 0) {
                     throw HttpReturnException
@@ -529,9 +541,26 @@ run(const ProcedureRunConfig & run,
 
     ML::Training_Data trainingSet(featureSpace);
 
-    ML::distribution<float> labelWeights[2];
-    labelWeights[0].resize(nx);
-    labelWeights[1].resize(nx);
+
+    unsigned num_weight_labels;
+    switch (runProcConf.mode) {
+    case CM_REGRESSION:
+        num_weight_labels = 1;
+        break;
+    case CM_BOOLEAN:
+        num_weight_labels = 2;
+        break;
+    case CM_CATEGORICAL:
+        num_weight_labels = labelMapping.size();
+        break;
+    default:
+        throw HttpReturnException(400, "Unknown classifier mode");
+    }
+
+    std::vector<ML::distribution<float>> labelWeights(num_weight_labels);
+    for(int i=0; i<num_weight_labels; i++) {
+        labelWeights[i].resize(nx);
+    }
 
     ML::distribution<float> exampleWeights(nx);
 
@@ -555,8 +584,12 @@ run(const ProcedureRunConfig & run,
 
         trainingSet.add_example(std::make_shared<ML::Mutable_Feature_Set>(std::move(fvs[i].featureSet)));
 
-        labelWeights[0][i] = weight * !label;
-        labelWeights[1][i] = weight * label;
+        if(runProcConf.mode != CM_REGRESSION) {
+            for(int lbl=0; lbl<num_weight_labels; lbl++) {
+                labelWeights[lbl][i] = weight * (label == lbl);
+            }
+        }
+
         exampleWeights[i]  = weight;
     }
 
@@ -632,16 +665,17 @@ run(const ProcedureRunConfig & run,
         weights = exampleWeights;
     }
     else {
-        double factorTrue  = pow(labelWeights[1].total(), -equalizationFactor);
-        double factorFalse = pow(labelWeights[0].total(), -equalizationFactor);
+        ML::distribution<float> factor_accum(exampleWeights.size(), 0);
+        for(int lbl=0; lbl<num_weight_labels; lbl++) {
+            double factor = pow(labelWeights[lbl].total(), -equalizationFactor);
 
-        INFO_MSG(logger) << "factorTrue = " << factorTrue;
-        INFO_MSG(logger) << "factorFalse = " << factorFalse;
+            //INFO_MSG(logger) 
+            cerr << "factor for class " << lbl << " = " << factor << endl;
 
-        weights = exampleWeights
-            * (factorTrue  * labelWeights[true]
-            + factorFalse * labelWeights[false]);
+            factor_accum += factor * labelWeights[lbl];
+        }
 
+        weights = exampleWeights * factor_accum;
         weights.normalize();
     }
 
@@ -654,7 +688,7 @@ run(const ProcedureRunConfig & run,
 
     if (!runProcConf.modelFileUrl.empty()) {
         try {
-            classifier.save(runProcConf.modelFileUrl.toString());
+            classifier.save(runProcConf.modelFileUrl.toDecodedString());
         }
         JML_CATCH_ALL {
             rethrowHttpException(400, "Error saving classifier to '"
@@ -714,7 +748,7 @@ ClassifyFunction(MldbServer * owner,
 
     itl.reset(new Itl());
 
-    itl->classifier.load(functionConfig.modelFileUrl.toString());
+    itl->classifier.load(functionConfig.modelFileUrl.toDecodedString());
 
     itl->featureSpace = itl->classifier.feature_space<DatasetFeatureSpace>();
 
@@ -886,15 +920,17 @@ apply(const FunctionApplier & applier_,
     std::shared_ptr<ML::Mutable_Feature_Set> fset;
     Date ts;
 
-    std::tie(dense, fset, ts) = getFeatureSet(context, true /* try to optimize */);
+    std::tie(dense, fset, ts)
+        = getFeatureSet(context, applier.optInfo /* try to optimize */);
 
     StructValue result;
     result.reserve(1);
 
     auto cat = itl->labelInfo.categorical();
-    if (!dense.empty()) {
+    if (!dense.empty() && applier.optInfo) {
         if (cat) {
-            auto scores = itl->classifier.impl->predict(dense, applier.optInfo);
+            ML::Label_Dist scores
+                = itl->classifier.impl->predict(dense, applier.optInfo);
             ExcAssertEqual(scores.size(), labelCount);
 
             vector<tuple<PathElement, ExpressionValue> > row;
@@ -907,12 +943,14 @@ apply(const FunctionApplier & applier_,
         }
         else if (itl->labelInfo.type() == ML::REAL) {
             ExcAssertEqual(labelCount, 1);
-            float score = itl->classifier.impl->predict(0, dense, applier.optInfo);
+            float score
+                = itl->classifier.impl->predict(0, dense, applier.optInfo);
             result.emplace_back("score", ExpressionValue(score, ts));
         }
         else {
             ExcAssertEqual(labelCount, 2);
-            float score = itl->classifier.impl->predict(1, dense, applier.optInfo);
+            float score
+                = itl->classifier.impl->predict(1, dense, applier.optInfo);
             result.emplace_back("score", ExpressionValue(score, ts));
         }
     }
@@ -1075,6 +1113,12 @@ apply(const FunctionApplier & applier,
     Date ts;
 
     std::tie(dense, fset, ts) = getFeatureSet(context, false /* attempt to optimize */);
+
+    if (fset->features.empty()) {
+        throw ML::Exception("The specified features couldn't be found in the "
+                            "classifier. At least one non-null feature column "
+                            "must be provided.");
+    }
 
     CellValue label = context.getColumn("label").getAtom();
 

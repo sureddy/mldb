@@ -7,17 +7,16 @@
 
 #pragma once
 
+#include <set>
+
 #include "mldb/rest/rest_request_fwd.h"
 #include "mldb/rest/rest_request.h"
 #include "mldb/rest/rest_connection.h"
 #include "mldb/ext/jsoncpp/json.h"
-#include "mldb/jml/utils/vector_utils.h"
-#include "mldb/jml/utils/positioned_types.h"
 #include "mldb/base/exc_assert.h"
-#include "mldb/arch/rtti_utils.h"
 #include "mldb/arch/demangle.h"
 #include "mldb/arch/exception.h"
-#include "mldb/types/value_description.h"
+#include "mldb/types/value_description_fwd.h"
 #include "mldb/types/regex.h"
 #include "mldb/http/http_exception.h"
 

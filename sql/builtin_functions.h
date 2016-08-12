@@ -14,21 +14,18 @@
 
 namespace Datacratic {
 namespace MLDB {
-namespace Builtins {
 
-void
-unpackJson(RowValue & row,
-           const std::string & id,
-           const Json::Value & val,
-           const Date & ts);
-
-inline void checkArgsSize(size_t number, size_t expected)
+inline void checkArgsSize(size_t number, size_t expected,
+                          std::string fctName="")
 {
     if (number != expected) {
+        if (!fctName.empty()) {
+            fctName = "function " + fctName + " ";
+        }
         if (expected != 1)
-            throw HttpReturnException(400, "expected " + to_string(expected) + " arguments, got " + to_string(number));
+            throw HttpReturnException(400, fctName + "expected " + to_string(expected) + " arguments, got " + to_string(number));
         else
-            throw HttpReturnException(400, "expected " + to_string(expected) + " argument, got " + to_string(number));
+            throw HttpReturnException(400, fctName + "expected " + to_string(expected) + " argument, got " + to_string(number));
     }
 }
 
@@ -60,6 +57,14 @@ inline Date calcTs(const ExpressionValue & v1,
                              v3.getEffectiveTimestamp()),
                     v4.getEffectiveTimestamp());
 }
+
+namespace Builtins {
+
+void
+unpackJson(RowValue & row,
+           const std::string & id,
+           const Json::Value & val,
+           const Date & ts);
 
 typedef BoundFunction (*BuiltinFunction) (const std::vector<BoundSqlExpression> &);
 
@@ -114,6 +119,38 @@ struct RegisterBuiltin {
 
     std::vector<std::shared_ptr<void> > handles;
 };
+
+
+/*****************************************************************************/
+/* SQL BUILTIN                                                               */
+/*****************************************************************************/
+
+/** Allows a builtin function to be defined in SQL.
+
+    Example:
+
+    DEF_SQL_BUILTIN(sincos, 2, "[sin($1), cos($1)]");
+
+    This will add a builtin function called sincos that is essentially a
+    macro for the given implementation.
+*/
+
+struct SqlBuiltin {
+    SqlBuiltin(const std::string & name,
+               const Utf8String & expr,
+               size_t arity);
+
+    BoundFunction bind(const std::vector<BoundSqlExpression> & args,
+                       SqlBindingScope & scope) const;
+
+    Utf8String functionName;
+    size_t arity;
+    std::shared_ptr<SqlExpression> parsed;
+    std::shared_ptr<void> handle;
+};
+
+#define DEF_SQL_BUILTIN(op, arity, expr) \
+    static Datacratic::MLDB::Builtins::SqlBuiltin register_##op(#op, expr, arity);
 
 } // namespace Builtins
 } // namespace MLDB

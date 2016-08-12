@@ -14,7 +14,7 @@ libgoogle-perftools-dev liblzma-dev libcrypto++-dev libblas-dev \
 liblapack-dev python-virtualenv libcurl4-openssl-dev libssh2-1-dev \
 libpython-dev libgit2-dev libv8-dev libarchive-dev libffi-dev \
 libfreetype6-dev libpng12-dev libcap-dev autoconf libtool unzip \
-language-pack-en
+language-pack-en libyaml-cpp-dev
 ```
 ## Installing Docker
 
@@ -178,8 +178,10 @@ make mldb_base IMG_NAME=quay.io/datacratic/mldb_base:YOUR_NEW_TAG
 
 make docker_mldb DOCKER_BASE_IMAGE=quay.io/datacratic/mldb_base:YOUR_NEW_TAG
 # When convinced things are ok:
+docker tag quay.io/datacratic/mldb_base:YOUR_NEW_TAG quay.io/datacratic/mldb_base:vYYYY.MM.DD.0
 docker tag quay.io/datacratic/mldb_base:YOUR_NEW_TAG quay.io/datacratic/mldb_base:14.04
-docker push -f quay.io/datacratic/mldb_base:14.04
+docker push quay.io/datacratic/mldb_base:vYYYY.MM.DD.0
+docker push quay.io/datacratic/mldb_base:14.04
 ```
 
 The script used to build this layer is `mldb_base/docker_create_mldb_base.sh`
@@ -240,18 +242,19 @@ not officially supported
 MLDB is compiled by default using the GCC compiler, version 4.8.
 
 
-#### Compiling with GCC 5.x
+#### Compiling with GCC 5.x or 6.x
 
-In order to use GCC version 5.x, the following commands should be used to
-install the compiler (currently GCC 5.3):
+In order to use GCC version 5.x or 6.x, the following commands should be used to
+install the compiler:
 
 ```
 sudo add-apt-repository ppa:ubuntu-toolchain-r/test
 sudo apt-get update
 sudo apt-get install gcc-5 g++-5
+sudo apt-get install gcc-6 g++-6
 ```
 
-You can then add `toolchain=gcc5` to the make command line to use the
+You can then add `toolchain=gcc5` or `toolchain=gcc6` to the make command line to use the
 newly installed compiler.
 
 #### Compiling with clang
@@ -260,8 +263,92 @@ In order to compile with the clang compiler, you will firstly need to
 install it:
 
 ```
-sudo apt-get install clang-3.5
+sudo apt-get install clang-3.6
 ```
 
 You can then add `toolchain=clang` to compile with the clang compiler.
 
+## Environment variables
+
+* `MLDB_CHECK_ROW_SCOPE_TYPES` is a boolean (default 0) that tells MLDB
+  whether to do extra type checking of row scopes.  Setting to 1 will
+  do so, at the expense of slightly slower code.  It may be helpful in
+  debugging of segmentation faults.
+* `MLDB_DEFAULT_PATH_OPTIMIZATION_LEVEL` controls how MLDB handles
+  optimized code-paths for specific situations.  When set to 'always'
+  (the default), optimized paths are always used when available.  This
+  leads to maximum speed.  When set to 'never', the base (unoptimized)
+  path is used.  When set to 'sometimes', the optimized path is taken
+  50% of the time.  This can be used when unit testing to ensure the
+  equivalence of optimized and non-optimized versions of code and thus
+  verify the correctness of the optimized versions.
+
+
+## CUDA support
+
+In order to run on a Nvidia GPU, CUDA needs to be enabled and the CUDA
+drivers set up on the machine.
+
+### Machine setup
+
+See here: [http://www.r-tutor.com/gpu-computing/cuda-installation/cuda7.5-ubuntu]
+The machine needs to have the Nvidia CUDA packages installed on the
+machine.
+
+Note that the machine may need to be restarted before the GPUs will be
+usable.
+
+```
+sudo apt-get install linux-image-generic linux-headers-generic
+wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.5-18_amd64.deb
+sudo dpkg -i cuda-repo-ubuntu1404_7.5-18_amd64.deb
+sudo apt-get update
+sudo apt-get install cuda
+nvidia-smi -q | head  // should print Driver Version: 352.68
+```
+
+You will also need cudnn version 5.5 in order to run most models on
+GPUS.  To get this you first need to sign up at the Nvidia page
+here: [https://developer.nvidia.com/accelerated-computing-developer].
+
+Once the registration is done, you can download the two deb files
+for cudnn:
+
+```
+31899464 libcudnn5_5.1.3-1+cuda7.5_amd64.deb
+28456606 libcudnn5-dev_5.1.3-1+cuda7.5_amd64.deb
+```
+
+and install them as follows:
+
+```
+sudo dpkg -i libcudnn5_5.1.3-1+cuda7.5_amd64.deb libcudnn5-dev_5.1.3-1+cuda7.5_amd64.deb
+```
+
+Note that since cudnn can't be distributed with MLDB, it will need to
+be installed inside the MLDB container (but only the first deb file)
+so that it can be found at runtime by MLDB.
+
+### Hardware compatibility
+
+Note that MLDB requires cards with shader model > 3.0 in order to run
+on CUDA.  You can identify the shader model of your card using the
+command
+
+```
+nvidia-smi -q
+```
+
+### Enabling CUDA in the build
+
+The following should be added to `local.mk`:
+
+```
+WITH_CUDA:=1
+```
+
+Or the following to the Make command-line:
+
+```
+make ... WITH_CUDA=1
+```

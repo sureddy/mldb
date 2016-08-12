@@ -1,8 +1,7 @@
-// This file is part of MLDB. Copyright 2015 Datacratic. All rights reserved.
-
 /** rest_request_binding.h                                         -*- C++ -*-
     Jeremy Barnes, 15 November 2012
     Copyright (c) 2012 Datacratic.  All rights reserved.
+    This file is part of MLDB. Copyright 2015 Datacratic. All rights reserved.
 
     Functionality to bind arbitrary functions into REST requests in a
     declarative manner.
@@ -20,6 +19,7 @@
 #include "mldb/types/json_printing.h"
 #include "mldb/rest/rest_request_params.h"
 #include "mldb/rest/rest_request_params_types.h"
+#include "mldb/jml/utils/positioned_types.h"
 
 namespace Datacratic {
 
@@ -399,6 +399,122 @@ createParameterExtractor(Json::Value & argHelp,
         {
             Json::Value parsed = Json::parse(request.payload);
             return JsonCodec<T>::decode(p.name.empty() ? parsed : parsed[p.name]);
+        };
+}
+
+template<typename T, typename Codec>
+static std::function<T (RestConnection & connection,
+                      const RestRequest & request,
+                      const RestRequestParsingContext & context)>
+createParameterExtractor(Json::Value & argHelp,
+                         const JsonParamDefault<T, Codec> & p, void * = 0)
+{
+    Json::Value & v = argHelp["jsonParams"];
+    Json::Value & v2 = v[v.size()];
+    if (!p.name.empty()) {
+        v2["name"] = p.name;
+    }
+    v2["description"] = p.description;
+    v2["cppType"] = ML::type_name<T>();
+    v2["encoding"] = "JSON";
+    v2["location"] = "Request Body";
+
+    return [=] (RestConnection & connection,
+                const RestRequest & request,
+                const RestRequestParsingContext & context)
+        {
+            if (request.payload == "") {
+                return p.defaultValue;
+            }
+
+            Json::Value parsed = Json::parse(request.payload);
+            if (p.name.empty()) {
+                return p.codec.decode(request.payload);
+            }
+            if (parsed.isMember(p.name)) {
+                return p.codec.decode(parsed[p.name].toStyledString());
+            }
+            return p.defaultValue;
+        };
+}
+
+template<typename T, typename Codec>
+static std::function<decltype(JsonCodec<T>::decode(std::declval<Json::Value>()))
+                     (RestConnection & connection,
+                      const RestRequest & request,
+                      const RestRequestParsingContext & context)>
+createParameterExtractor(Json::Value & argHelp,
+                         const HybridParamJsonDefault<T, Codec> & p, void * = 0)
+{
+    Json::Value desc;
+    desc["name"] = p.name;
+    desc["description"] = p.description;
+    desc["cppType"] = ML::type_name<T>();
+    desc["encoding"] = "URI encoded or JSON";
+    desc["location"] = "query string or Request Body";
+
+    for (const auto key: {"requestParams", "jsonParams"}) {
+        Json::Value & v = argHelp[key];
+        v[v.size()] = desc;
+    }
+
+    return [=] (RestConnection & connection,
+                const RestRequest & request,
+                const RestRequestParsingContext & context)
+        {
+            Json::Value parsed = request.payload.empty() ?
+                Json::nullValue : Json::parse(request.payload);
+            if (!request.params.empty() && !parsed == Json::nullValue) {
+                throw HttpReturnException(
+                    400, "You cannot mix query string and body parameters");
+            }
+            if (request.params.hasValue(p.name)) {
+                return p.codec.decode(request.params.getValue(p.name));
+            }
+            if (parsed.isMember(p.name)) {
+                return p.codec.decode(parsed[p.name].toStyledString());
+            }
+            return p.defaultValue;
+        };
+}
+
+template<typename T, typename Codec>
+static std::function<decltype(JsonCodec<T>::decode(std::declval<Json::Value>()))
+                     (RestConnection & connection,
+                      const RestRequest & request,
+                      const RestRequestParsingContext & context)>
+createParameterExtractor(Json::Value & argHelp,
+                         const HybridParamDefault<T, Codec> & p, void * = 0)
+{
+    Json::Value desc;
+    desc["name"] = p.name;
+    desc["description"] = p.description;
+    desc["cppType"] = ML::type_name<T>();
+    desc["encoding"] = "URI encoded or JSON";
+    desc["location"] = "query string or Request Body";
+
+    for (const auto key: {"requestParams", "jsonParams"}) {
+        Json::Value & v = argHelp[key];
+        v[v.size()] = desc;
+    }
+
+    return [=] (RestConnection & connection,
+                const RestRequest & request,
+                const RestRequestParsingContext & context)
+        {
+            Json::Value parsed = request.payload.empty() ?
+                Json::nullValue : Json::parse(request.payload);
+            if (!request.params.empty() && !parsed == Json::nullValue) {
+                throw HttpReturnException(
+                    400, "You cannot mix query string and body parameters");
+            }
+            if (parsed.isMember(p.name)) {
+                return p.jsonCodec.decode(parsed[p.name].toStyledString());
+            }
+            if (request.params.hasValue(p.name)) {
+                return p.restCodec.decode(request.params.getValue(p.name));
+            }
+            return p.defaultValue;
         };
 }
 

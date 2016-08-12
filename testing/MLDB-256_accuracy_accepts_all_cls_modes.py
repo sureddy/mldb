@@ -79,7 +79,7 @@ class Mldb256Test(MldbUnitTest):
                     "inputData": "select {x, y} as features, label as label from categorical", # on purpose the wrong dataset
                     "experimentName": "bool_exp_seg",
                     "keepArtifacts": True,
-                    "modelFileUrlPattern": "file://temp/mldb-256_bool_seg.cls",
+                    "modelFileUrlPattern": "file://tmp/mldb-256_bool_seg.cls",
                     "algorithm": "glz",
                     "configuration": {
                         "glz": {
@@ -105,7 +105,7 @@ class Mldb256Test(MldbUnitTest):
                 "inputData": "select {x, y} as features, label as label from boolean",
                 "experimentName": "bool_exp",
                 "keepArtifacts": True,
-                "modelFileUrlPattern": "file://temp/mldb-256_bool.cls",
+                "modelFileUrlPattern": "file://tmp/mldb-256_bool.cls",
                 "algorithm": "glz",
                 "configuration": {
                     "glz": {
@@ -144,7 +144,7 @@ class Mldb256Test(MldbUnitTest):
                 "inputData": "select {x, y} as features, label as label, weight as weight from boolean",
                 "experimentName": "bool_exp",
                 "keepArtifacts": True,
-                "modelFileUrlPattern": "file://temp/mldb-256_bool.cls",
+                "modelFileUrlPattern": "file://tmp/mldb-256_bool.cls",
                 "algorithm": "glz",
                 "configuration": {
                     "glz": {
@@ -183,7 +183,12 @@ class Mldb256Test(MldbUnitTest):
         })
         jsRez = rez.json()
         self.assertGreater(jsRez["status"]["folds"][0]["resultsTest"]["auc"], 0.65)
-    
+
+        bestF = jsRez["status"]["folds"][0]["resultsTest"]["bestF"]
+        accuracy = (bestF["counts"]["truePositives"] + bestF["counts"]["trueNegatives"]) / \
+                        (bestF["population"]["included"] + bestF["population"]["excluded"])
+        self.assertEqual(bestF["pr"]["accuracy"], accuracy)
+
 
     def test_toy_categorical_eval_works(self):
 
@@ -195,9 +200,9 @@ class Mldb256Test(MldbUnitTest):
             "params": {
                 "mode": "categorical",
                 "testingData": """
-
-                    SELECT {* EXCLUDING(label)} as score, label as label from toy_categorical
-
+                    SELECT {* EXCLUDING(label)} as score, 
+                           label as label
+                    FROM toy_categorical
                 """,
                 "runOnCreation": True
             }
@@ -211,31 +216,37 @@ class Mldb256Test(MldbUnitTest):
                         "f": 0.0,
                         "recall": 0.0,
                         "support": 1,
-                        "precision": 0.0
+                        "precision": 0.0,
+                        "accuracy": 0.0
                     },
                     "0": {
                         "f": 0.8000000143051146,
                         "recall": 1.0,
                         "support": 2,
-                        "precision": 0.6666666865348816
+                        "precision": 0.6666666865348816,
+                        "accuracy": 1.0
                     },
                     "2": {
                         "f": 1.0,
                         "recall": 1.0,
                         "support": 2,
-                        "precision": 1.0
+                        "precision": 1.0,
+                        "accuracy": 1.0
                     }
                 }
+
 
         self.assertEqual(jsRez["status"]["firstRun"]["status"]["labelStatistics"],
                          goodLabelStatistics)
 
         total_f1 = 0
         total_recall = 0
+        total_accuracy = 0
         total_support = 0
         total_precision = 0
         for val in goodLabelStatistics.itervalues():
             total_f1 += val["f"] * val["support"]
+            total_accuracy += val["accuracy"] * val["support"]
             total_recall += val["recall"] * val["support"]
             total_precision += val["precision"] * val["support"]
             total_support += val["support"]
@@ -244,6 +255,7 @@ class Mldb256Test(MldbUnitTest):
                 {
                     "f": total_f1 / total_support,
                     "recall": total_recall / total_support,
+                    "accuracy": total_accuracy / total_support,
                     "support": total_support,
                     "precision": total_precision / total_support
                 })
@@ -256,7 +268,7 @@ class Mldb256Test(MldbUnitTest):
                 "inputData": "select {col*} as features, label as label from categorical",
                 "experimentName": "categorical_exp",
                 "keepArtifacts": True,
-                "modelFileUrlPattern": "file://temp/mldb-256_cat.cls",
+                "modelFileUrlPattern": "file://tmp/mldb-256_cat.cls",
                 "algorithm": "glz",
                 "configuration": {
                     "glz": {
@@ -338,7 +350,7 @@ class Mldb256Test(MldbUnitTest):
                 "inputData": "select {col*} as features, label as label from regression",
                 "experimentName": "reg_exp",
                 "keepArtifacts": True,
-                "modelFileUrlPattern": "file://temp/mldb-256_reg.cls",
+                "modelFileUrlPattern": "file://tmp/mldb-256_reg.cls",
                 "algorithm": "glz_linear",
                 "configuration": {
                     "glz_linear": {

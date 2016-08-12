@@ -30,6 +30,9 @@ This endpoint accepts the following query-string parameters:
 - `rowHashes`: boolean (default `false`), if `true` an implicit column called
   `_rowHash` will be added. Forced to `true` when `format=full`.
 
+Note that instead of passing the parameters in the query string, you can
+alternatively pass them in the body.
+
 ### Cell value representation
 
 JSON defines numerical, string, boolean and null representations, but not timestamps, intervals, NaN or Inf.

@@ -9,6 +9,7 @@
 
 #include "execution_pipeline.h"
 #include "join_utils.h"
+#include <list>
 
 namespace Datacratic {
 namespace MLDB {
@@ -39,7 +40,8 @@ struct TableLexicalScope: public LexicalScope {
     doGetColumn(const ColumnName & columnName, int fieldOffset);
 
     virtual GetAllColumnsOutput
-    doGetAllColumns(std::function<ColumnName (const ColumnName &)> keep,
+    doGetAllColumns(const Utf8String & tableName,
+                    ColumnFilter& keep,
                     int fieldOffset);
 
     virtual BoundFunction
@@ -149,12 +151,20 @@ struct SubSelectLexicalScope: public TableLexicalScope {
     doGetColumn(const ColumnName & columnName, int fieldOffset);
 
     virtual GetAllColumnsOutput
-    doGetAllColumns(std::function<ColumnName (const ColumnName &)> keep, int fieldOffset);
+    doGetAllColumns(const Utf8String & tableName,
+                    ColumnFilter& keep,
+                    int fieldOffset);
 
     virtual std::set<Utf8String> tableNames() const;
 
     virtual std::vector<std::shared_ptr<ExpressionValueInfo> >
     outputAdded() const;
+
+    virtual BoundFunction
+    doGetFunction(const Utf8String & functionName,
+              const std::vector<BoundSqlExpression> & args,
+              int fieldOffset,
+              SqlBindingScope & argScope);
 };
 
 /*****************************************************************************/
@@ -188,6 +198,7 @@ struct SubSelectElement: public PipelineElement {
 
     SubSelectElement(std::shared_ptr<PipelineElement> root,
                      SelectStatement& statement,
+                     OrderByExpression& orderBy,
                      GetParamInfo getParamInfo,
                      const Utf8String& asName);
 
@@ -259,7 +270,8 @@ struct JoinLexicalScope: public LexicalScope {
         other.
     */
     virtual GetAllColumnsOutput
-    doGetAllColumns(std::function<ColumnName (const ColumnName &)> keep,
+    doGetAllColumns(const Utf8String & tableName,
+                    ColumnFilter& keep,
                     int fieldOffset);
 
     virtual BoundFunction
@@ -338,6 +350,7 @@ struct JoinElement: public PipelineElement {
         void restart();
     };
 
+
     /** Execution runs on left rows and right rows together.  This requires to
         sort the value that will be compared (ie. the pivot).  The worse case
         complexity is O(left rows) * O(right rows) when the pivot value is a
@@ -356,10 +369,15 @@ struct JoinElement: public PipelineElement {
         const Bound * parent;
         std::shared_ptr<ElementExecutor> root, left, right;
         
-        std::shared_ptr<PipelineResults> l,r;
-
-        void takeMoreInput();
-            
+        std::shared_ptr<PipelineResults> r;
+        typedef std::list<std::shared_ptr<PipelineResults> > bufferType;
+        bufferType bufferedLeftValues;
+        /** Note that the left-side values are buffered so that we can
+            backtrack when we need to form the cross product on matching 
+            values.
+        */
+        bufferType::iterator l, firstDuplicate;
+    
         virtual std::shared_ptr<PipelineResults> take();
 
         virtual void restart();
@@ -660,15 +678,17 @@ struct OrderByElement: public PipelineElement {
 
 struct AggregateLexicalScope: public LexicalScope {
 
-    AggregateLexicalScope(std::shared_ptr<PipelineExpressionScope> inner);
+    AggregateLexicalScope(std::shared_ptr<PipelineExpressionScope> inner, int numValues);
 
     std::shared_ptr<PipelineExpressionScope> inner;
+    int numValues_;
 
     virtual ColumnGetter
     doGetColumn(const ColumnName & columnName, int fieldOffset);
 
     virtual GetAllColumnsOutput
-    doGetAllColumns(std::function<ColumnName (const ColumnName &)> keep,
+    doGetAllColumns(const Utf8String & tableName,
+                    ColumnFilter& keep,
                     int fieldOffset);
 
     virtual BoundFunction

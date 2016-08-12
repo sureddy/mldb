@@ -186,28 +186,29 @@ initRoutes()
 
    // MLDB-1380 - make sure that the CPU support the minimal instruction sets
     if (supportsSystemRequirements()) {
-        addRouteAsync(versionNode, "/query", { "GET" },
-                      "Select from dataset",
-                      &MldbServer::runHttpQuery,
-                      this,
-                      RestParam<Utf8String>("q", "The SQL query string"),
-                      PassConnectionId(),
-                      RestParamDefault<std::string>("format",
-                                                    "Format of output",
-                                                    "full"),
-                      RestParamDefault<bool>("headers",
-                                             "Do we include headers on table format",
-                                             true),
-                      RestParamDefault<bool>("rowNames",
-                                             "Do we include row names in output",
-                                             true),
-                      RestParamDefault<bool>("rowHashes",
-                                             "Do we include row hashes in output",
-                                             false),
-                      RestParamDefault<bool>("sortColumns",
-                                             "Do we sort the column names",
-                                             false));
-
+        const auto queryStringDef = "The string representing the SQL query. "
+                                    "Must be defined either as a query string "
+                                    "parameter or the JSON body.";
+        addRouteAsync(
+            versionNode, "/query", { "GET" }, "Select from dataset",
+            &MldbServer::runHttpQuery, this,
+            HybridParamDefault<Utf8String>("q", queryStringDef, ""),
+            PassConnectionId(),
+            HybridParamDefault<std::string>("format",
+                                            "Format of output",
+                                            "full"),
+            HybridParamDefault<bool>("headers",
+                                     "Do we include headers on table format",
+                                      true),
+            HybridParamDefault<bool>("rowNames",
+                                     "Do we include row names in output",
+                                     true),
+            HybridParamDefault<bool>("rowHashes",
+                                     "Do we include row hashes in output",
+                                     false),
+            HybridParamDefault<bool>("sortColumns",
+                                     "Do we sort the column names",
+                                     false));
 
         this->versionNode = &versionNode;
         return true;
@@ -250,7 +251,8 @@ runHttpQuery(const Utf8String& query,
             return queryFromStatement(stm, mldbContext);
         };
 
-    MLDB::runHttpQuery(runQuery, connection, format, createHeaders,
+    MLDB::runHttpQuery(runQuery,
+                       connection, format, createHeaders,
                        rowNames, rowHashes, sortColumns);
 }
 
@@ -260,7 +262,6 @@ query(const Utf8String& query) const
 {
     auto stm = SelectStatement::parse(query.rawString());
     SqlExpressionMldbScope mldbContext(this);
-    BoundTableExpression table = stm.from->bind(mldbContext);
 
     return queryFromStatement(stm, mldbContext);
 }

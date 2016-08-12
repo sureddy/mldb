@@ -100,7 +100,7 @@ BOOST_AUTO_TEST_CASE(test_coord_parsing)
         BOOST_CHECK_EQUAL(coord.toUtf8String(), "x");
     }
 
-    for (auto c: { "x", "x.y", "\"", "\"\"", "\"x.y\"", ".", "..", "...", "\".\"" }) {
+    for (auto c: { "x", "x.y", "\"", "\"\"", "\"x.y\"", ".", "..", "...", "\".\"",  "[\"d5\",1]" }) {
         //cerr << "doing " << c << endl;
         PathElement coord(c);
         //cerr << "c = " << coord.toEscapedUtf8String() << endl;
@@ -179,9 +179,18 @@ BOOST_AUTO_TEST_CASE(test_coords_parsing)
         BOOST_CHECK_EQUAL(coords1.toUtf8String(), "\"\".\"\"");
     }
 
+    // MLDB-1721
+    {
+        Path coords1 = Path::parse("\"\n\"");
+        BOOST_CHECK_EQUAL(coords1.size(), 1);
+        BOOST_CHECK_EQUAL(coords1.toUtf8String(), "\"\n\"");
+    }
+
     {
         JML_TRACE_EXCEPTIONS(false);
         BOOST_CHECK_THROW(Path::parse("\n"), ML::Exception);
+        BOOST_CHECK_THROW(Path::parse("\0", 1), ML::Exception);
+        BOOST_CHECK_THROW(Path::parse("\"\0\"", 3), ML::Exception);
         BOOST_CHECK_THROW(Path::parse("\""), ML::Exception);
         BOOST_CHECK_THROW(Path::parse("\"x."), ML::Exception);
         BOOST_CHECK_THROW(Path::parse("\"x."), ML::Exception);
@@ -222,10 +231,10 @@ BOOST_AUTO_TEST_CASE(test_indexes)
 {
     BOOST_CHECK_EQUAL(PathElement(0).toIndex(), 0);
     BOOST_CHECK_EQUAL(PathElement("0").toIndex(), 0);
-    BOOST_CHECK_EQUAL(PathElement("00").toIndex(), 0);
+    BOOST_CHECK_EQUAL(PathElement("00").toIndex(), -1);
     BOOST_CHECK_EQUAL(PathElement(123456789).toIndex(), 123456789);
     BOOST_CHECK_EQUAL(PathElement("123456789").toIndex(), 123456789);
-    BOOST_CHECK_EQUAL(PathElement("0123456789").toIndex(), 123456789);
+    BOOST_CHECK_EQUAL(PathElement("0123456789").toIndex(), -1);
     BOOST_CHECK_EQUAL(PathElement(-1).toIndex(), -1);
     BOOST_CHECK_EQUAL(PathElement(-1000).toIndex(), -1);
 }

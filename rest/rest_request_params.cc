@@ -18,9 +18,6 @@ Utf8String restEncode(const Utf8String & str)
 Utf8String restEncode(const std::string & str)
 {
     return str;
-    url_canon::RawCanonOutputT<char> buffer;
-    url_util::EncodeURIComponent(str.c_str(), str.length(), &buffer);
-    return std::string(buffer.data(), buffer.length());
 }
 
 Utf8String restDecode(std::string str, Utf8String *)
@@ -92,6 +89,5 @@ std::string encodeUriComponent(const std::string & in)
     url_util::EncodeURIComponent(in.c_str(), in.length(), &buffer);
     return std::string(buffer.data(), buffer.length());
 }
-
 
 } // namespace Datacratic

@@ -69,7 +69,7 @@ struct TestBindingContext: public SqlBindingScope {
 
     virtual GetAllColumnsOutput
     doGetAllColumns(const Utf8String & tableName,
-                    std::function<ColumnName (const ColumnName &)> keep)
+                    ColumnFilter& keep)
     {
         GetAllColumnsOutput result;
 
@@ -1043,7 +1043,7 @@ BOOST_AUTO_TEST_CASE(test_select_statement_parse)
 {
     TestBindingContext context;
     {
-        auto statement = SelectStatement::parse("SELECT *");
+        auto statement = SelectStatement::parse("SELECT * FROM ds");
         BOOST_CHECK_EQUAL(statement.select.clauses.size(), 1);
     }
 
